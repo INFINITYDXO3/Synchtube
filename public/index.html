@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SyncTube - Watch Together</title>
+  <style>
+    :root { --bg: #0f0f0f; --card: #1e1e1e; --accent: #ff0000; --text: #ffffff; }
+    body { margin: 0; padding: 20px; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); text-align: center; }
+    h1 { margin-bottom: 5px; }
+    .subtitle { color: #888; margin-bottom: 25px; }
+    #controls { display: flex; gap: 10px; justify-content: center; max-width: 700px; margin: 0 auto 20px; flex-wrap: wrap; }
+    input { flex: 1; padding: 12px; border-radius: 8px; border: 1px solid #333; background: var(--card); color: white; font-size: 16px; }
+    button { padding: 12px 24px; border: none; border-radius: 8px; background: var(--accent); color: white; font-size: 16px; cursor: pointer; font-weight: bold; }
+    button:hover { opacity: 0.9; }
+    #player-container { max-width: 800px; margin: 0 auto; aspect-ratio: 16/9; background: #000; border-radius: 12px; overflow: hidden; position: relative; }
+    #player { width: 100%; height: 100%; }
+    #player iframe { border: 0; width: 100%; height: 100%; }
+    .status { margin-top: 15px; color: #aaa; font-size: 14px; }
+    .sound-hint { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.7); padding: 15px 25px; border-radius: 8px; pointer-events: none; transition: opacity 0.3s; }
+    .sound-hint.hidden { opacity: 0; }
+  </style>
+</head>
+<body>
+  <h1>🎬 SyncTube</h1>
+  <p class="subtitle">Paste a YouTube link. Everyone watches together.</p>
+
+  <div id="controls">
+    <input type="text" id="url-input" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off">
+    <button id="load-btn">▶ Load & Sync</button>
+  </div>
+
+  <div id="player-container">
+    <div id="player"></div>
+    <div id="sound-hint" class="sound-hint">🔊 Click anywhere to enable sound & play</div>
+  </div>
+
+  <p class="status" id="status">Waiting for connection...</p>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    let player;
+    let isRemoteSync = false;
+    let currentVideoId = '';
+    let soundEnabled = false;
+
+    // Load YouTube IFrame API
+    const tag = document.createElement('script');
+    tag.src = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(tag);
+
+    function onYouTubeIframeAPIReady() {
+      player = new YT.Player('player', {
+        height: '100%',
+        width: '100%',
+        videoId: '',
+        playerVars: { 
+          controls: 1, 
+          fs: 1, 
+          modestbranding: 1, 
+          rel: 0 
+        },
+        events: {
+          onReady: (event) => {
+            // Fix fullscreen icon missing in some browsers
+            const iframe = document.querySelector('#player iframe');
+            if (iframe) {
+              iframe.setAttribute('allow', 'autoplay; encrypted-media; fullscreen; picture-in-picture');
+              iframe.setAttribute('allowfullscreen', 'true');
+            }
+            
+            // Enable sound on first user interaction (browser policy requirement)
+            document.addEventListener('click', () => {
+              if (!soundEnabled && player && player.unMute) {
+                player.unMute();
+                soundEnabled = true;
+                document.getElementById('sound-hint').classList.add('hidden');
+              }
+            }, { once: true });
+
+            document.getElementById('status').textContent = 'Player ready. Waiting for video...';
+          },
+          onStateChange: onPlayerStateChange
+        }
+      });
+    }
+
+    function onPlayerStateChange(event) {
+      if (isRemoteSync) return;
+      if (event.data === YT.PlayerState.PLAYING || event.data === YT.PlayerState.PAUSED) {
+        socket.emit('syncState', {
+          currentTime: player.getCurrentTime(),
+          isPlaying: event.data === YT.PlayerState.PLAYING
+        });
+      }
+    }
+
+    // Sync from server
+    function syncToState(data) {
+      isRemoteSync = true;
+      if (data.videoId && data.videoId !== currentVideoId) {
+        currentVideoId = data.videoId;
+        player.loadVideoById(data.videoId);
+        document.getElementById('status').textContent = `Now watching: ${data.videoId}`;
+      } else if (data.videoId) {
+        player.seekTo(data.currentTime, true);
+      }
+
+      if (data.isPlaying) player.playVideo();
+      else player.pauseVideo();
+
+      setTimeout(() => { isRemoteSync = false; }, 800);
+    }
+
+    socket.on('sync', syncToState);
+    socket.on('videoChanged', syncToState);
+
+    // UI: Load new video
+    document.getElementById('load-btn').addEventListener('click', () => {
+      const url = document.getElementById('url-input').value.trim();
+      if (url) {
+        socket.emit('changeVideo', url);
+        document.getElementById('url-input').value = '';
+      }
+    });
+
+    document.getElementById('url-input').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') document.getElementById('load-btn').click();
+    });
+  </script>
+</body>
+</html>
