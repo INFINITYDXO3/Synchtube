@@ -7,7 +7,7 @@ const { debug } = require('console');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
-const apiKey = AIzaSyAvtYp0cTlacd3TdWqOkPrGzMZSSQ2ZAEI;
+const apiKey = "AIzaSyAvtYp0cTlacd3TdWqOkPrGzMZSSQ2ZAEI";
 
 
 app.use(express.static(path.join(__dirname, 'public')));
