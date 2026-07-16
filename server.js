@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
+const { debug } = require('console');
 
 const app = express();
 const server = http.createServer(app);
@@ -81,6 +82,7 @@ io.on('connection', (socket) => {
 
   socket.on('loadPlaylist', async (url) => {
     const playlistId = extractPlaylistId(url.trim());
+    console.log(playlistId);
     if (!playlistId) {
       socket.emit('status', { type: 'error', message: '❌ Invalid playlist. Must contain ?list=...' });
       return;
