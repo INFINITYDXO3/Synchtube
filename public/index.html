@@ -84,7 +84,7 @@
 <script src="/socket.io/socket.io.js"></script>
 <script>
   const socket = io();
-  let player, isRemoteSync = false, currentVideoId = '', soundEnabled = false;
+  let player, isRemoteSync = false, currentVideoId = '', soundEnabled = true;
   const playersContainer = document.getElementById('player-container');
 
   // Load YouTube IFrame API
@@ -145,7 +145,7 @@
   // Sync Handler (FIXED: precise timestamp injection)
   function syncToState(data) {
     isRemoteSync = true;
-    if (data.videoId && data.videoId !== currentVideoId) {
+    if (data.videoId != null && data.videoId !== currentVideoId) {
       currentVideoId = data.videoId;
       // Load at exact time
       player.loadVideoById(data.videoId, data.currentTime || 0);
@@ -154,7 +154,7 @@
     }
 
     if (data.isPlaying) player.playVideo();
-    else player.pauseVideo();
+    else if(data.videoId != null) player.pauseVideo();
 
     updateQueueUI(data.queue, data.videoId);
     setTimeout(() => { isRemoteSync = false; }, 600);
