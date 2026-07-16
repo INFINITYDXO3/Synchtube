@@ -89,71 +89,68 @@
   let player, isRemoteSync = false, currentVideoId = '', soundEnabled = false, playerReady = false;
   let pendingState = null;
 
-  const tag = document.createElement('script');
-  tag.src = 'https://www.youtube.com/iframe_api';
-  document.head.appendChild(tag);
-
-  function onYouTubeIframeAPIReady() {
-  player = new YT.Player('player', {
-    height: '100%', width: '100%',
-    videoId: '',
-    playerVars: {
-      controls: 1,
-      fs: 1,
-      playsinline: 1,
-      modestbranding: 1,
-      rel: 0,
-      // ✅ REMOVED: origin: window.location.origin (causes postMessage error)
-      enablejsapi: 1,
-      host: 'https://www.youtube.com' // ✅ Helps with iframe permissions
-    },
-    events: {
-      onReady: onPlayerReady,
-      onStateChange: onPlayerStateChange,
-      onError: onPlayerError
-    }
-  });
-}
-
-function onPlayerReady(event) {
-  // ✅ Safe iframe attribute injection with retry
-  const setIframeAttrs = () => {
-    const iframe = document.querySelector('#player iframe');
-    if (!iframe) {
-      setTimeout(setIframeAttrs, 100); // Retry if not ready yet
-      return;
-    }
-    iframe.setAttribute('allow', 'autoplay; encrypted-media; fullscreen; picture-in-picture; accelerometer; gyroscope');
-    iframe.setAttribute('allowfullscreen', 'true');
-    iframe.setAttribute('referrerpolicy', 'no-referrer');
-    iframe.setAttribute('crossorigin', 'anonymous');
+  // ✅ YouTube API requires this to be global
+  window.onYouTubeIframeAPIReady = function() {
+    player = new YT.Player('player', {
+      height: '100%', width: '100%',
+      videoId: '',
+      playerVars: { controls: 1, fs: 1, playsinline: 1, modestbranding: 1, rel: 0, enablejsapi: 1 },
+      events: {
+        onReady: onPlayerReady,
+        onStateChange: onPlayerStateChange,
+        onError: onPlayerError
+      }
+    });
   };
-  setIframeAttrs();
 
-  document.getElementById('status').textContent = '✅ Player ready. Paste a link to start.';
-  
-  // Sound enable logic...
-  const enableSound = () => { /* ...same as before... */ };
-  document.addEventListener('click', enableSound, { once: true });
-  document.addEventListener('touchstart', enableSound, { once: true });
-}
+  function onPlayerReady(event) {
+    // ✅ Safe iframe permission setting (delayed to avoid race conditions)
+    setTimeout(() => {
+      try {
+        const iframe = document.querySelector('#player iframe');
+        if (iframe) {
+          iframe.setAttribute('allow', 'autoplay; encrypted-media; fullscreen; picture-in-picture');
+          iframe.setAttribute('allowfullscreen', 'true');
+        }
+      } catch (e) { /* Ignore cross-origin restrictions */ }
+    }, 150);
 
-  const enableSound = () => {
-    if (!soundEnabled && player?.unMute) {
-      player.unMute();
-      soundEnabled = true;
-      document.getElementById('sound-hint').classList.add('hidden');
+    playerReady = true;
+    document.getElementById('status').textContent = '✅ Player ready. Paste a link to start.';
+    document.getElementById('status').style.color = '#aaa';
+    
+    if (pendingState) applyState(pendingState);
+    pendingState = null;
+
+    // Enable sound on first interaction
+    const enableSound = () => {
+      if (!soundEnabled && player?.unMute) {
+        player.unMute(); soundEnabled = true;
+        document.getElementById('sound-hint').classList.add('hidden');
+      }
+    };
+    document.addEventListener('click', enableSound, { once: true });
+    document.addEventListener('touchstart', enableSound, { once: true });
+  }
+
+  function onPlayerStateChange(event) {
+    if (isRemoteSync) return;
+    if (event.data === YT.PlayerState.ENDED) {
+      socket.emit('playNext');
     }
-  };
-  document.addEventListener('click', enableSound, { once: true });
-  document.addEventListener('touchstart', enableSound, { once: true });
-
-  document.getElementById('pip-btn').addEventListener('click', async () => {
-    const iframe = document.querySelector('#player iframe');
-    if (iframe && document.pictureInPictureEnabled) {
-      try { await iframe.requestPictureInPicture(); } catch (e) { console.warn('PiP failed:', e); }
+    if (event.data === YT.PlayerState.PLAYING || event.data === YT.PlayerState.PAUSED) {
+      socket.emit('syncState', {
+        currentTime: player.getCurrentTime(),
+        isPlaying: event.data === YT.PlayerState.PLAYING
+      });
     }
-  });
+  }
+
+  function onPlayerError(event) {
+    const msgs = {2:'Invalid ID', 5:'Playback blocked', 100:'Not found', 101:'Embed disabled', 150:'Restricted'};
+    document.getElementById('status').textContent = `⚠️ ${msgs[event.data] || `Error ${event.data}`}`;
+    document.getElementById('status').style.color = '#ff6b6b';
+  }
 
   function handleSync(data) {
     if (!playerReady) { pendingState = data; return; }
@@ -162,10 +159,11 @@ function onPlayerReady(event) {
 
   function applyState(data) {
     isRemoteSync = true;
-    if (data.videoId != null && data.videoId !== currentVideoId) {
+    if (data.videoId && data.videoId !== currentVideoId) {
       currentVideoId = data.videoId;
       player.loadVideoById({ videoId: data.videoId, startSeconds: data.currentTime || 0 });
-      setStatus(`🎬 Now watching: ${data.videoId}`, '#2ecc71');
+      document.getElementById('status').textContent = `🎬 Now watching: ${data.videoId}`;
+      document.getElementById('status').style.color = '#2ecc71';
     } else if (data.videoId) {
       player.seekTo(data.currentTime, true);
     }
@@ -175,6 +173,7 @@ function onPlayerReady(event) {
     setTimeout(() => { isRemoteSync = false; }, 500);
   }
 
+  // Socket Listeners
   socket.on('sync', handleSync);
   socket.on('videoChanged', handleSync);
   socket.on('queueUpdated', handleSync);
@@ -184,6 +183,18 @@ function onPlayerReady(event) {
     document.getElementById('username-input').focus();
   });
 
+  socket.on('updateUsers', users => {
+    const list = document.getElementById('user-list');
+    list.innerHTML = users.map(u => `<div class="user-item">👤 ${escapeHtml(u)}</div>`).join('');
+    document.getElementById('user-count').textContent = users.length;
+  });
+
+  socket.on('status', ({ type, message }) => {
+    document.getElementById('status').textContent = message;
+    document.getElementById('status').style.color = type === 'error' ? '#ff6b6b' : type === 'loading' ? '#f39c12' : '#aaa';
+  });
+
+  // UI Event Listeners
   document.getElementById('username-submit').addEventListener('click', () => {
     const name = document.getElementById('username-input').value.trim();
     if (!name) return;
@@ -204,9 +215,7 @@ function onPlayerReady(event) {
   });
 
   document.getElementById('load-playlist-btn').addEventListener('click', () => {
-    console.log('[UI] Playlist button clicked');
     const url = document.getElementById('url-input').value.trim();
-    console.log(url);
     if (!url) { setStatus('⚠️ Please paste a playlist URL first', '#f39c12'); return; }
     socket.emit('loadPlaylist', url);
     setStatus('🔄 Fetching playlist...', '#f39c12');
@@ -214,23 +223,12 @@ function onPlayerReady(event) {
   });
 
   document.getElementById('next-btn').addEventListener('click', () => socket.emit('playNext'));
-
-  socket.on('updateUsers', users => {
-    const list = document.getElementById('user-list');
-    list.innerHTML = users.map(u => `<div class="user-item">👤 ${escapeHtml(u)}</div>`).join('');
-    document.getElementById('user-count').textContent = users.length;
+  document.getElementById('pip-btn').addEventListener('click', async () => {
+    const iframe = document.querySelector('#player iframe');
+    if (iframe && document.pictureInPictureEnabled) {
+      try { await iframe.requestPictureInPicture(); } catch (e) { console.warn('PiP blocked:', e); }
+    }
   });
-
-  socket.on('status', ({ type, message }) => {
-    console.log(`[Socket Status] ${type}: ${message}`);
-    setStatus(message, type === 'error' ? '#ff6b6b' : type === 'loading' ? '#f39c12' : '#aaa');
-  });
-
-  function setStatus(msg, color) {
-    const el = document.getElementById('status');
-    el.textContent = msg;
-    el.style.color = color;
-  }
 
   function updateQueueUI(queue, currentId) {
     const list = document.getElementById('queue-list');
@@ -244,6 +242,11 @@ function onPlayerReady(event) {
         <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${id}</span>
       </div>
     `).join('');
+  }
+
+  function setStatus(msg, color) {
+    const el = document.getElementById('status');
+    el.textContent = msg; el.style.color = color;
   }
 
   function escapeHtml(unsafe) {
