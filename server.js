@@ -9,28 +9,66 @@ const io = new Server(server);
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Shared playback state
 const state = {
   videoId: null,
+  playlistId: null,
+  queue: [],
   isPlaying: false,
   currentTime: 0,
   lastSyncTime: Date.now()
 };
 
-// Extract YouTube video ID from various URL formats
+const users = new Map();
+
 function extractYouTubeId(url) {
-  const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
-  const match = url.match(regExp);
-  return (match && match[2].length === 11) ? match[2] : null;
+  const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
+  return match ? match[1] : null;
+}
+
+function extractPlaylistId(url) {
+  const match = url.match(/[?&]list=([^&]+)/);
+  return match ? match[1] : null;
+}
+
+function getCalculatedTime() {
+  if (state.isPlaying && state.videoId) {
+    return state.currentTime + (Date.now() - state.lastSyncTime) / 1000;
+  }
+  return state.currentTime;
+}
+
+// API-free playlist fetcher using Piped's public instance
+async function fetchPlaylistVideos(playlistId) {
+  try {
+    const res = await fetch(`https://pipedapi.kavin.rocks/playlists/${playlistId}`);
+    if (!res.ok) throw new Error('API error');
+    const data = await res.json();
+    return data.relatedStreams
+      .filter(v => v?.url)
+      .map(v => extractYouTubeId(`https://${v.url}`))
+      .filter(Boolean);
+  } catch (err) {
+    console.error('Playlist fetch failed:', err.message);
+    return [];
+  }
 }
 
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+  socket.emit('promptUsername');
 
-  // Send current state to new user
-  socket.emit('sync', { ...state, currentTime: calculateCurrentTime() });
+  socket.on('setUsername', async (rawName) => {
+    const name = rawName.trim().slice(0, 20) || `User${Math.floor(Math.random()*900)+100}`;
+    users.set(socket.id, name);
+    io.emit('updateUsers', Array.from(users.values()));
 
-  // Handle new video submission
+    // Send full current state immediately
+    socket.emit('sync', {
+      ...state,
+      currentTime: getCalculatedTime(),
+      users: Array.from(users.values())
+    });
+  });
+
   socket.on('changeVideo', (url) => {
     const videoId = extractYouTubeId(url.trim());
     if (videoId) {
@@ -38,34 +76,49 @@ io.on('connection', (socket) => {
       state.isPlaying = true;
       state.currentTime = 0;
       state.lastSyncTime = Date.now();
-      io.emit('videoChanged', { ...state });
+      io.emit('videoChanged', { ...state, currentTime: 0 });
     }
   });
 
-  // Handle play/pause/seek updates
+  socket.on('loadPlaylist', async (url) => {
+    const playlistId = extractPlaylistId(url.trim());
+    if (!playlistId) return;
+
+    const queue = await fetchPlaylistVideos(playlistId);
+    if (queue.length > 0) {
+      state.playlistId = playlistId;
+      state.queue = queue;
+      state.videoId = queue[0];
+      state.isPlaying = true;
+      state.currentTime = 0;
+      state.lastSyncTime = Date.now();
+      io.emit('queueUpdated', { ...state, currentTime: 0 });
+    }
+  });
+
+  socket.on('playNext', () => {
+    const idx = state.queue.indexOf(state.videoId);
+    if (idx >= 0 && idx < state.queue.length - 1) {
+      state.videoId = state.queue[idx + 1];
+      state.currentTime = 0;
+      state.isPlaying = true;
+      state.lastSyncTime = Date.now();
+      io.emit('videoChanged', { ...state, currentTime: 0 });
+    }
+  });
+
   socket.on('syncState', (clientState) => {
-    // Only accept updates from the user who triggered the action
     state.isPlaying = clientState.isPlaying;
     state.currentTime = clientState.currentTime;
     state.lastSyncTime = Date.now();
-    socket.broadcast.emit('sync', { ...state, currentTime: clientState.currentTime });
+    io.emit('sync', { ...state, currentTime: clientState.currentTime });
   });
 
   socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
+    users.delete(socket.id);
+    io.emit('updateUsers', Array.from(users.values()));
   });
 });
 
-// Calculate real-time playback offset
-function calculateCurrentTime() {
-  if (state.isPlaying && state.videoId) {
-    const elapsed = (Date.now() - state.lastSyncTime) / 1000;
-    return Math.max(0, state.currentTime + elapsed);
-  }
-  return state.currentTime;
-}
-
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`🚀 SyncTube server running on http://localhost:${PORT}`);
-});
+server.listen(PORT, () => console.log(`🚀 SyncTube running on port ${PORT}`));
