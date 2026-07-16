@@ -21,7 +21,7 @@ const state = {
 const users = new Map();
 
 function extractYouTubeId(url) {
-  const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=))([\w-]{11})/);
+  const match = url.match(/(?:youtu\.be\/|youtube\.com\/(?:embed\/|v\/|watch\?v=|watch\?.+&v=|shorts\/))([\w-]{11})/);
   return match ? match[1] : null;
 }
 
@@ -37,31 +37,46 @@ function getCalculatedTime() {
   return state.currentTime;
 }
 
-// API-free playlist fetcher using Piped's public instance
+// Reliable playlist fetcher with fallback instance
 async function fetchPlaylistVideos(playlistId) {
-  try {
-    const res = await fetch(`https://pipedapi.kavin.rocks/playlists/${playlistId}`);
-    if (!res.ok) throw new Error('API error');
-    const data = await res.json();
-    return data.relatedStreams
-      .filter(v => v?.url)
-      .map(v => extractYouTubeId(`https://${v.url}`))
-      .filter(Boolean);
-  } catch (err) {
-    console.error('Playlist fetch failed:', err.message);
-    return [];
+  const instances = [
+    'https://pipedapi.kavin.rocks',
+    'https://api.piped.yt',
+    'https://pipedapi.in.projectsegfau.lt'
+  ];
+  
+  for (const base of instances) {
+    try {
+      const res = await fetch(`${base}/playlists/${playlistId}`, { signal: AbortSignal.timeout(5000) });
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (!data.relatedStreams?.length) continue;
+      
+      return data.relatedStreams
+        .filter(v => v?.url)
+        .map(v => {
+          // Piped returns "/watch?v=VIDEO_ID"
+          const match = v.url.match(/[?&]v=([^&]+)/);
+          return match ? match[1] : null;
+        })
+        .filter(Boolean);
+    } catch (err) {
+      console.warn(`Instance ${base} failed, trying next...`);
+    }
   }
+  return [];
 }
 
 io.on('connection', (socket) => {
+  console.log('Connected:', socket.id);
   socket.emit('promptUsername');
 
-  socket.on('setUsername', async (rawName) => {
-    const name = rawName.trim().slice(0, 20) || `User${Math.floor(Math.random()*900)+100}`;
+  socket.on('setUsername', (rawName) => {
+    const name = rawName.trim().slice(0, 20) || `User${Math.floor(Math.random() * 900) + 100}`;
     users.set(socket.id, name);
     io.emit('updateUsers', Array.from(users.values()));
 
-    // Send full current state immediately
+    // Send full state immediately after auth
     socket.emit('sync', {
       ...state,
       currentTime: getCalculatedTime(),
@@ -73,6 +88,8 @@ io.on('connection', (socket) => {
     const videoId = extractYouTubeId(url.trim());
     if (videoId) {
       state.videoId = videoId;
+      state.playlistId = null;
+      state.queue = [];
       state.isPlaying = true;
       state.currentTime = 0;
       state.lastSyncTime = Date.now();
@@ -84,7 +101,9 @@ io.on('connection', (socket) => {
     const playlistId = extractPlaylistId(url.trim());
     if (!playlistId) return;
 
+    socket.emit('status', { type: 'loading', message: 'Fetching playlist...' });
     const queue = await fetchPlaylistVideos(playlistId);
+
     if (queue.length > 0) {
       state.playlistId = playlistId;
       state.queue = queue;
@@ -93,6 +112,8 @@ io.on('connection', (socket) => {
       state.currentTime = 0;
       state.lastSyncTime = Date.now();
       io.emit('queueUpdated', { ...state, currentTime: 0 });
+    } else {
+      socket.emit('status', { type: 'error', message: 'Failed to fetch playlist. Try another link or use YouTube Data API.' });
     }
   });
 
