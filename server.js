@@ -81,9 +81,11 @@ io.on('connection', (socket) => {
   });
 
   socket.on('loadPlaylist', async (url) => {
+    console.log("Load Playlist....");
     const playlistId = extractPlaylistId(url.trim());
     if (!playlistId) return;
-
+    
+    console.log("Fetching videos.....");
     const queue = await fetchPlaylistVideos(playlistId);
     if (queue.length > 0) {
       state.playlistId = playlistId;
@@ -94,6 +96,8 @@ io.on('connection', (socket) => {
       state.lastSyncTime = Date.now();
       io.emit('queueUpdated', { ...state, currentTime: 0 });
     }
+
+    console.log(queue.length);
   });
 
   socket.on('playNext', () => {
