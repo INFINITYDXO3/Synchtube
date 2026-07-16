@@ -6,6 +6,8 @@ const path = require('path');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
+const apiKey = AIzaSyAvtYp0cTlacd3TdWqOkPrGzMZSSQ2ZAEI;
+
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -37,51 +39,29 @@ function getCalculatedTime() {
   return state.currentTime;
 }
 
-// Reliable playlist fetcher with fallback instance
-async function fetchPlaylistVideos(playlistId) {
-  const instances = [
-    'https://pipedapi.kavin.rocks',
-    'https://api.piped.yt',
-    'https://pipedapi.in.projectsegfau.lt'
-  ];
-  
-  for (const base of instances) {
-    try {
-      const res = await fetch(`${base}/playlists/${playlistId}`, { signal: AbortSignal.timeout(5000) });
-      if (!res.ok) continue;
-      const data = await res.json();
-      if (!data.relatedStreams?.length) continue;
-      
-      return data.relatedStreams
-        .filter(v => v?.url)
-        .map(v => {
-          // Piped returns "/watch?v=VIDEO_ID"
-          const match = v.url.match(/[?&]v=([^&]+)/);
-          return match ? match[1] : null;
-        })
-        .filter(Boolean);
-    } catch (err) {
-      console.warn(`Instance ${base} failed, trying next...`);
-    }
-  }
-  return [];
+async function fetchPlaylistVideos(playlistId, apiKey) {
+  const videos = [];
+  let pageToken = '';
+  do {
+    const res = await fetch(
+      `https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&playlistId=${playlistId}&maxResults=50&pageToken=${pageToken}&key=${apiKey}`
+    );
+    const data = await res.json();
+    videos.push(...(data.items?.map(i => i.contentDetails?.videoId).filter(Boolean) || []));
+    pageToken = data.nextPageToken;
+  } while (pageToken && videos.length < 50); // Limit to 50 for free tier
+  return videos;
 }
 
 io.on('connection', (socket) => {
-  console.log('Connected:', socket.id);
+  console.log('🟢 Connected:', socket.id);
   socket.emit('promptUsername');
 
   socket.on('setUsername', (rawName) => {
     const name = rawName.trim().slice(0, 20) || `User${Math.floor(Math.random() * 900) + 100}`;
     users.set(socket.id, name);
     io.emit('updateUsers', Array.from(users.values()));
-
-    // Send full state immediately after auth
-    socket.emit('sync', {
-      ...state,
-      currentTime: getCalculatedTime(),
-      users: Array.from(users.values())
-    });
+    socket.emit('sync', { ...state, currentTime: getCalculatedTime(), users: Array.from(users.values()) });
   });
 
   socket.on('changeVideo', (url) => {
@@ -94,26 +74,40 @@ io.on('connection', (socket) => {
       state.currentTime = 0;
       state.lastSyncTime = Date.now();
       io.emit('videoChanged', { ...state, currentTime: 0 });
+    } else {
+      socket.emit('status', { type: 'error', message: 'Invalid YouTube URL' });
     }
   });
 
   socket.on('loadPlaylist', async (url) => {
     const playlistId = extractPlaylistId(url.trim());
-    if (!playlistId) return;
+    if (!playlistId) {
+      socket.emit('status', { type: 'error', message: '❌ Invalid playlist. Must contain ?list=...' });
+      return;
+    }
 
-    socket.emit('status', { type: 'loading', message: 'Fetching playlist...' });
-    const queue = await fetchPlaylistVideos(playlistId);
+    socket.emit('status', { type: 'loading', message: '🔄 Fetching playlist...' });
+    console.log(`[Playlist] Fetching: ${playlistId}`);
 
-    if (queue.length > 0) {
+    try {
+      const queue = await fetchPlaylistVideos(playlistId, apiKey);
+      if (queue.length === 0) {
+        socket.emit('status', { type: 'error', message: '⚠️ Empty playlist or all APIs blocked. Try another link.' });
+        return;
+      }
+
       state.playlistId = playlistId;
       state.queue = queue;
       state.videoId = queue[0];
       state.isPlaying = true;
       state.currentTime = 0;
       state.lastSyncTime = Date.now();
+
       io.emit('queueUpdated', { ...state, currentTime: 0 });
-    } else {
-      socket.emit('status', { type: 'error', message: 'Failed to fetch playlist. Try another link or use YouTube Data API.' });
+      console.log(`[Playlist] ✅ Loaded ${queue.length} videos`);
+    } catch (err) {
+      console.error('[Playlist] ❌ Server error:', err);
+      socket.emit('status', { type: 'error', message: '⚠️ Server failed to fetch playlist.' });
     }
   });
 

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SyncTube - Watch Together</title>
   <style>
-    :root { --bg: #0f0f0f; --card: #1e1e1e; --accent: #ff0000; --text: #ffffff; --muted: #888; --success: #2ecc71; --warn: #f39c12; }
+    :root { --bg: #0f0f0f; --card: #1e1e1e; --accent: #ff0000; --text: #ffffff; --muted: #888; --success: #2ecc71; --warn: #f39c12; --error: #ff6b6b; }
     * { box-sizing: border-box; }
     body { margin: 0; padding: 20px; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
     
@@ -35,12 +35,12 @@
     .queue-item.active { border-left: 3px solid var(--accent); background: #2a2525; }
     .queue-item { cursor: pointer; transition: 0.2s; }
     .queue-item:hover { background: #333; }
-    .status-bar { margin-top: 10px; color: var(--muted); font-size: 13px; min-height: 20px; }
+    .status-bar { margin-top: 10px; min-height: 20px; font-size: 13px; font-weight: 500; transition: color 0.2s; }
     .sound-hint { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.85); padding: 12px 20px; border-radius: 8px; pointer-events: none; z-index: 5; }
     .sound-hint.hidden { opacity: 0; }
     #pip-btn { position: absolute; bottom: 10px; right: 10px; background: rgba(0,0,0,0.7); border: none; color: white; padding: 8px 12px; border-radius: 6px; cursor: pointer; z-index: 10; font-size: 14px; }
     #pip-btn:hover { background: var(--accent); }
-    .loading-spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 6px; }
+    .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 6px; }
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
@@ -60,17 +60,18 @@
     <h1>SyncTube</h1>
     <div id="controls">
       <input type="text" id="url-input" placeholder="YouTube video or playlist URL" autocomplete="off">
-      <button id="load-video-btn">Load</button>
-      <button id="load-playlist-btn" class="secondary">📜 Playlist</button>
+      <button id="load-video-btn">▶ Load Video</button>
+      <button id="load-playlist-btn" class="secondary">📜 Load Playlist</button>
       <button id="next-btn" class="secondary">⏭ Next</button>
     </div>
 
+    <!-- Replace the old #player-container div with this -->
     <div id="player-container">
-      <div id="player"></div>
+      <div id="player" referrerpolicy="no-referrer" crossorigin="anonymous"></div>
       <button id="pip-btn">📺 PiP</button>
       <div id="sound-hint" class="sound-hint">🔊 Tap anywhere to enable sound</div>
     </div>
-    <div class="status-bar" id="status">Initializing...</div>
+    <div class="status-bar" id="status" style="color: #aaa;">Initializing...</div>
   </div>
 
   <div class="side-panel">
@@ -86,45 +87,57 @@
 <script>
   const socket = io();
   let player, isRemoteSync = false, currentVideoId = '', soundEnabled = false, playerReady = false;
-  let pendingState = null; // Queue state until player is ready
+  let pendingState = null;
 
-  // Load YouTube IFrame API
   const tag = document.createElement('script');
   tag.src = 'https://www.youtube.com/iframe_api';
   document.head.appendChild(tag);
 
   function onYouTubeIframeAPIReady() {
-    player = new YT.Player('player', {
-      height: '100%', width: '100%',
-      playerVars: { controls: 1, fs: 1, playsinline: 1, modestbranding: 1, rel: 0, origin: window.location.origin },
-      events: {
-        onReady: () => {
-          const iframe = document.querySelector('#player iframe');
-          if (iframe) {
-            iframe.setAttribute('allow', 'autoplay; encrypted-media; fullscreen; picture-in-picture; accelerometer; gyroscope');
-            iframe.setAttribute('allowfullscreen', 'true');
-          }
-          playerReady = true;
-          document.getElementById('status').textContent = 'Player ready. Waiting for video...';
-          if (pendingState) applyState(pendingState);
-          pendingState = null;
-        },
-        onStateChange: (e) => {
-          if (isRemoteSync) return;
-          if (e.data === YT.PlayerState.ENDED) socket.emit('playNext');
-          if (e.data === YT.PlayerState.PLAYING || e.data === YT.PlayerState.PAUSED) {
-            socket.emit('syncState', { currentTime: player.getCurrentTime(), isPlaying: e.data === YT.PlayerState.PLAYING });
-          }
-        },
-        onError: (e) => {
-          const msgs = {2:'Invalid ID', 5:'Playback blocked', 100:'Not found', 101:'Embed disabled', 150:'Restricted'};
-          document.getElementById('status').textContent = `⚠️ ${msgs[e.data] || `Error ${e.data}`}`;
-        }
-      }
-    });
-  }
+  player = new YT.Player('player', {
+    height: '100%', width: '100%',
+    videoId: '',
+    playerVars: {
+      controls: 1,
+      fs: 1,
+      playsinline: 1,
+      modestbranding: 1,
+      rel: 0,
+      // ✅ REMOVED: origin: window.location.origin (causes postMessage error)
+      enablejsapi: 1,
+      host: 'https://www.youtube.com' // ✅ Helps with iframe permissions
+    },
+    events: {
+      onReady: onPlayerReady,
+      onStateChange: onPlayerStateChange,
+      onError: onPlayerError
+    }
+  });
+}
 
-  // Sound & PiP
+function onPlayerReady(event) {
+  // ✅ Safe iframe attribute injection with retry
+  const setIframeAttrs = () => {
+    const iframe = document.querySelector('#player iframe');
+    if (!iframe) {
+      setTimeout(setIframeAttrs, 100); // Retry if not ready yet
+      return;
+    }
+    iframe.setAttribute('allow', 'autoplay; encrypted-media; fullscreen; picture-in-picture; accelerometer; gyroscope');
+    iframe.setAttribute('allowfullscreen', 'true');
+    iframe.setAttribute('referrerpolicy', 'no-referrer');
+    iframe.setAttribute('crossorigin', 'anonymous');
+  };
+  setIframeAttrs();
+
+  document.getElementById('status').textContent = '✅ Player ready. Paste a link to start.';
+  
+  // Sound enable logic...
+  const enableSound = () => { /* ...same as before... */ };
+  document.addEventListener('click', enableSound, { once: true });
+  document.addEventListener('touchstart', enableSound, { once: true });
+}
+
   const enableSound = () => {
     if (!soundEnabled && player?.unMute) {
       player.unMute();
@@ -142,7 +155,6 @@
     }
   });
 
-  // Core Sync Engine
   function handleSync(data) {
     if (!playerReady) { pendingState = data; return; }
     applyState(data);
@@ -153,15 +165,12 @@
     if (data.videoId && data.videoId !== currentVideoId) {
       currentVideoId = data.videoId;
       player.loadVideoById({ videoId: data.videoId, startSeconds: data.currentTime || 0 });
-      document.getElementById('status').textContent = `Now watching: ${data.videoId}`;
+      setStatus(`🎬 Now watching: ${data.videoId}`, '#2ecc71');
     } else if (data.videoId) {
-      // Exact seek for sync updates
       player.seekTo(data.currentTime, true);
     }
-
     if (data.isPlaying) player.playVideo();
     else player.pauseVideo();
-
     updateQueueUI(data.queue, data.videoId);
     setTimeout(() => { isRemoteSync = false; }, 500);
   }
@@ -189,17 +198,18 @@
 
   document.getElementById('load-video-btn').addEventListener('click', () => {
     const url = document.getElementById('url-input').value.trim();
-    if (url) socket.emit('changeVideo', url);
+    if (!url) { setStatus('⚠️ Please paste a URL first', '#f39c12'); return; }
+    socket.emit('changeVideo', url);
     document.getElementById('url-input').value = '';
   });
 
   document.getElementById('load-playlist-btn').addEventListener('click', () => {
+    console.log('[UI] Playlist button clicked');
     const url = document.getElementById('url-input').value.trim();
-    if (url) {
-      socket.emit('loadPlaylist', url);
-      document.getElementById('status').innerHTML = '<span class="loading-spinner"></span> Fetching playlist...';
-      document.getElementById('url-input').value = '';
-    }
+    if (!url) { setStatus('⚠️ Please paste a playlist URL first', '#f39c12'); return; }
+    socket.emit('loadPlaylist', url);
+    setStatus('🔄 Fetching playlist...', '#f39c12');
+    document.getElementById('url-input').value = '';
   });
 
   document.getElementById('next-btn').addEventListener('click', () => socket.emit('playNext'));
@@ -211,10 +221,15 @@
   });
 
   socket.on('status', ({ type, message }) => {
-    document.getElementById('status').textContent = type === 'loading' ? message : `⚠️ ${message}`;
-    if (type === 'error') document.getElementById('status').style.color = '#ff6b6b';
-    else document.getElementById('status').style.color = '#aaa';
+    console.log(`[Socket Status] ${type}: ${message}`);
+    setStatus(message, type === 'error' ? '#ff6b6b' : type === 'loading' ? '#f39c12' : '#aaa');
   });
+
+  function setStatus(msg, color) {
+    const el = document.getElementById('status');
+    el.textContent = msg;
+    el.style.color = color;
+  }
 
   function updateQueueUI(queue, currentId) {
     const list = document.getElementById('queue-list');
