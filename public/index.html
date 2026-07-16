@@ -206,6 +206,7 @@ function onPlayerReady(event) {
   document.getElementById('load-playlist-btn').addEventListener('click', () => {
     console.log('[UI] Playlist button clicked');
     const url = document.getElementById('url-input').value.trim();
+    console.log(url);
     if (!url) { setStatus('⚠️ Please paste a playlist URL first', '#f39c12'); return; }
     socket.emit('loadPlaylist', url);
     setStatus('🔄 Fetching playlist...', '#f39c12');
