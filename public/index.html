@@ -1,257 +1,64 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SyncTube - Watch Together</title>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sync</title>
   <style>
-    :root { --bg: #0f0f0f; --card: #1e1e1e; --accent: #ff0000; --text: #ffffff; --muted: #888; --success: #2ecc71; --warn: #f39c12; --error: #ff6b6b; }
-    * { box-sizing: border-box; }
-    body { margin: 0; padding: 20px; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
-    
-    #username-modal { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-    .modal-box { background: var(--card); padding: 30px; border-radius: 12px; width: 90%; max-width: 400px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-    .modal-box input { width: 100%; padding: 12px; margin: 15px 0; border-radius: 8px; border: 1px solid #444; background: #2a2a2a; color: white; font-size: 16px; }
-    .modal-box button { width: 100%; padding: 12px; border: none; border-radius: 8px; background: var(--accent); color: white; font-size: 16px; cursor: pointer; font-weight: bold; }
-
-    #main { display: grid; grid-template-columns: 1fr 280px; gap: 20px; max-width: 1200px; margin: 0 auto; }
-    @media (max-width: 850px) { #main { grid-template-columns: 1fr; } .side-panel { order: 2; } }
-
-    #controls { display: flex; gap: 10px; margin-bottom: 15px; flex-wrap: wrap; }
-    input, button { padding: 10px; border-radius: 8px; border: 1px solid #333; background: var(--card); color: white; font-size: 14px; }
-    input { flex: 1; }
-    button { background: var(--accent); cursor: pointer; font-weight: bold; }
-    button:hover { opacity: 0.9; }
-    button.secondary { background: #333; }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-
-    #player-container { aspect-ratio: 16/9; background: #000; border-radius: 12px; overflow: hidden; position: relative; }
-    #player { width: 100%; height: 100%; }
-    #player iframe { border: 0; width: 100%; height: 100%; }
-
-    .side-panel { background: var(--card); padding: 15px; border-radius: 12px; overflow-y: auto; max-height: 80vh; }
-    .side-panel h3 { margin: 0 0 10px; font-size: 16px; border-bottom: 1px solid #333; padding-bottom: 8px; }
-    .user-item, .queue-item { padding: 8px 10px; margin: 5px 0; background: #252525; border-radius: 6px; display: flex; align-items: center; gap: 8px; font-size: 14px; }
-    .queue-item.active { border-left: 3px solid var(--accent); background: #2a2525; }
-    .queue-item { cursor: pointer; transition: 0.2s; }
-    .queue-item:hover { background: #333; }
-    .status-bar { margin-top: 10px; min-height: 20px; font-size: 13px; font-weight: 500; transition: color 0.2s; }
-    .sound-hint { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: rgba(0,0,0,0.85); padding: 12px 20px; border-radius: 8px; pointer-events: none; z-index: 5; }
-    .sound-hint.hidden { opacity: 0; }
-    #pip-btn { position: absolute; bottom: 10px; right: 10px; background: rgba(0,0,0,0.7); border: none; color: white; padding: 8px 12px; border-radius: 6px; cursor: pointer; z-index: 10; font-size: 14px; }
-    #pip-btn:hover { background: var(--accent); }
-    .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid #fff; border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite; margin-right: 6px; }
-    @keyframes spin { to { transform: rotate(360deg); } }
+    body { background:#111; color:#fff; font-family:system-ui; text-align:center; padding:20px; }
+    #controls { margin:15px auto; max-width:600px; display:flex; gap:10px; }
+    input { flex:1; padding:10px; border-radius:6px; border:1px solid #333; background:#222; color:#fff; }
+    button { padding:10px 20px; border:none; border-radius:6px; background:#e62117; color:#fff; cursor:pointer; }
+    #player { width:100%; max-width:800px; aspect-ratio:16/9; margin:20px auto; background:#000; border-radius:8px; overflow:hidden; }
   </style>
 </head>
 <body>
-
-<div id="username-modal">
-  <div class="modal-box">
-    <h2>🎬 Join Watch Party</h2>
-    <p style="color:#888; margin-bottom:10px;">Enter a username to sync with others</p>
-    <input type="text" id="username-input" placeholder="Your name" maxlength="20" autocomplete="off">
-    <button id="username-submit">Join Party</button>
+  <h2>SyncTube</h2>
+  <div id="controls">
+    <input id="url" placeholder="Paste YouTube URL" autocomplete="off">
+    <button id="load">Load</button>
   </div>
-</div>
+  <div id="player"></div>
+  <p id="status" style="color:#888; font-size:13px;">Connecting...</p>
 
-<div id="main" style="display:none;">
-  <div>
-    <h1>SyncTube</h1>
-    <div id="controls">
-      <input type="text" id="url-input" placeholder="YouTube video or playlist URL" autocomplete="off">
-      <button id="load-video-btn">▶ Load Video</button>
-      <button id="load-playlist-btn" class="secondary">📜 Load Playlist</button>
-      <button id="next-btn" class="secondary">⏭ Next</button>
-    </div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    let player, ready = false, syncing = false;
+    let pending = null;
 
-    <!-- Replace the old #player-container div with this -->
-    <div id="player-container">
-      <div id="player" referrerpolicy="no-referrer" crossorigin="anonymous"></div>
-      <button id="pip-btn">📺 PiP</button>
-      <div id="sound-hint" class="sound-hint">🔊 Tap anywhere to enable sound</div>
-    </div>
-    <div class="status-bar" id="status" style="color: #aaa;">Initializing...</div>
-  </div>
-
-  <div class="side-panel">
-    <h3>👥 Viewers (<span id="user-count">0</span>)</h3>
-    <div id="user-list"></div>
-    
-    <h3 style="margin-top:20px;">🎵 Queue</h3>
-    <div id="queue-list"></div>
-  </div>
-</div>
-
-<script src="/socket.io/socket.io.js"></script>
-<script>
-  const socket = io();
-  let player, isRemoteSync = false, currentVideoId = '', soundEnabled = false, playerReady = false;
-  let pendingState = null;
-
-  // ✅ YouTube API requires this to be global
-  window.onYouTubeIframeAPIReady = function() {
-    player = new YT.Player('player', {
-      height: '100%', width: '100%',
-      videoId: '',
-      playerVars: { controls: 1, fs: 1, playsinline: 1, modestbranding: 1, rel: 0, enablejsapi: 1 },
-      events: {
-        onReady: onPlayerReady,
-        onStateChange: onPlayerStateChange,
-        onError: onPlayerError
-      }
-    });
-  };
-
-  function onPlayerReady(event) {
-    // ✅ Safe iframe permission setting (delayed to avoid race conditions)
-    setTimeout(() => {
-      try {
-        const iframe = document.querySelector('#player iframe');
-        if (iframe) {
-          iframe.setAttribute('allow', 'autoplay; encrypted-media; fullscreen; picture-in-picture');
-          iframe.setAttribute('allowfullscreen', 'true');
-        }
-      } catch (e) { /* Ignore cross-origin restrictions */ }
-    }, 150);
-
-    playerReady = true;
-    document.getElementById('status').textContent = '✅ Player ready. Paste a link to start.';
-    document.getElementById('status').style.color = '#aaa';
-    
-    if (pendingState) applyState(pendingState);
-    pendingState = null;
-
-    // Enable sound on first interaction
-    const enableSound = () => {
-      if (!soundEnabled && player?.unMute) {
-        player.unMute(); soundEnabled = true;
-        document.getElementById('sound-hint').classList.add('hidden');
-      }
-    };
-    document.addEventListener('click', enableSound, { once: true });
-    document.addEventListener('touchstart', enableSound, { once: true });
-  }
-
-  function onPlayerStateChange(event) {
-    if (isRemoteSync) return;
-    if (event.data === YT.PlayerState.ENDED) {
-      socket.emit('playNext');
-    }
-    if (event.data === YT.PlayerState.PLAYING || event.data === YT.PlayerState.PAUSED) {
-      socket.emit('syncState', {
-        currentTime: player.getCurrentTime(),
-        isPlaying: event.data === YT.PlayerState.PLAYING
+    window.onYouTubeIframeAPIReady = () => {
+      player = new YT.Player('player', {
+        height:'100%', width:'100%', videoId:'',
+        playerVars:{ controls:1, fs:1, playsinline:1, origin:location.origin },
+        events:{ onReady:()=>{ ready=true; document.getElementById('status').textContent='Ready.'; if(pending) apply(pending); pending=null; },
+                 onStateChange:e=>{ if(syncing) return;
+                   if(e.data===YT.PlayerState.PLAYING||e.data===YT.PlayerState.PAUSED)
+                     socket.emit('playerState',{ currentTime:player.getCurrentTime(), isPlaying:e.data===YT.PlayerState.PLAYING });
+                 } }
       });
+    };
+
+    function apply(d) {
+      syncing = true;
+      if(d.videoId && d.videoId !== player.getVideoData()?.video_id)
+        player.loadVideoById({ videoId:d.videoId, startSeconds:d.currentTime||0 });
+      else if(d.videoId) player.seekTo(d.currentTime, true);
+      d.isPlaying ? player.playVideo() : player.pauseVideo();
+      setTimeout(()=>syncing=false, 400);
     }
-  }
 
-  function onPlayerError(event) {
-    const msgs = {2:'Invalid ID', 5:'Playback blocked', 100:'Not found', 101:'Embed disabled', 150:'Restricted'};
-    document.getElementById('status').textContent = `⚠️ ${msgs[event.data] || `Error ${event.data}`}`;
-    document.getElementById('status').style.color = '#ff6b6b';
-  }
+    socket.on('sync', d => ready ? apply(d) : pending=d);
 
-  function handleSync(data) {
-    if (!playerReady) { pendingState = data; return; }
-    applyState(data);
-  }
+    document.getElementById('load').onclick = () => {
+      const u = document.getElementById('url').value.trim();
+      if(u) socket.emit('load', u);
+      document.getElementById('url').value = '';
+    };
 
-  function applyState(data) {
-    isRemoteSync = true;
-    if (data.videoId && data.videoId !== currentVideoId) {
-      currentVideoId = data.videoId;
-      player.loadVideoById({ videoId: data.videoId, startSeconds: data.currentTime || 0 });
-      document.getElementById('status').textContent = `🎬 Now watching: ${data.videoId}`;
-      document.getElementById('status').style.color = '#2ecc71';
-    } else if (data.videoId) {
-      player.seekTo(data.currentTime, true);
-    }
-    if (data.isPlaying) player.playVideo();
-    else player.pauseVideo();
-    updateQueueUI(data.queue, data.videoId);
-    setTimeout(() => { isRemoteSync = false; }, 500);
-  }
-
-  // Socket Listeners
-  socket.on('sync', handleSync);
-  socket.on('videoChanged', handleSync);
-  socket.on('queueUpdated', handleSync);
-
-  socket.on('promptUsername', () => {
-    document.getElementById('username-modal').style.display = 'flex';
-    document.getElementById('username-input').focus();
-  });
-
-  socket.on('updateUsers', users => {
-    const list = document.getElementById('user-list');
-    list.innerHTML = users.map(u => `<div class="user-item">👤 ${escapeHtml(u)}</div>`).join('');
-    document.getElementById('user-count').textContent = users.length;
-  });
-
-  socket.on('status', ({ type, message }) => {
-    document.getElementById('status').textContent = message;
-    document.getElementById('status').style.color = type === 'error' ? '#ff6b6b' : type === 'loading' ? '#f39c12' : '#aaa';
-  });
-
-  // UI Event Listeners
-  document.getElementById('username-submit').addEventListener('click', () => {
-    const name = document.getElementById('username-input').value.trim();
-    if (!name) return;
-    document.getElementById('username-modal').style.display = 'none';
-    document.getElementById('main').style.display = 'grid';
-    socket.emit('setUsername', name);
-  });
-
-  document.getElementById('url-input').addEventListener('keypress', e => {
-    if (e.key === 'Enter') document.getElementById('load-video-btn').click();
-  });
-
-  document.getElementById('load-video-btn').addEventListener('click', () => {
-    const url = document.getElementById('url-input').value.trim();
-    if (!url) { setStatus('⚠️ Please paste a URL first', '#f39c12'); return; }
-    socket.emit('changeVideo', url);
-    document.getElementById('url-input').value = '';
-  });
-
-  document.getElementById('load-playlist-btn').addEventListener('click', () => {
-    const url = document.getElementById('url-input').value.trim();
-    if (!url) { setStatus('⚠️ Please paste a playlist URL first', '#f39c12'); return; }
-    socket.emit('loadPlaylist', url);
-    setStatus('🔄 Fetching playlist...', '#f39c12');
-    document.getElementById('url-input').value = '';
-  });
-
-  document.getElementById('next-btn').addEventListener('click', () => socket.emit('playNext'));
-  document.getElementById('pip-btn').addEventListener('click', async () => {
-    const iframe = document.querySelector('#player iframe');
-    if (iframe && document.pictureInPictureEnabled) {
-      try { await iframe.requestPictureInPicture(); } catch (e) { console.warn('PiP blocked:', e); }
-    }
-  });
-
-  function updateQueueUI(queue, currentId) {
-    const list = document.getElementById('queue-list');
-    if (!queue?.length) {
-      list.innerHTML = '<div style="color:#666; padding:10px; font-size:13px;">Empty. Paste a playlist URL.</div>';
-      return;
-    }
-    list.innerHTML = queue.map((id, i) => `
-      <div class="queue-item ${id === currentId ? 'active' : ''}" onclick="socket.emit('changeVideo', 'https://youtube.com/watch?v=${id}')">
-        <span style="color:#666; min-width:20px;">${i+1}.</span>
-        <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${id}</span>
-      </div>
-    `).join('');
-  }
-
-  function setStatus(msg, color) {
-    const el = document.getElementById('status');
-    el.textContent = msg; el.style.color = color;
-  }
-
-  function escapeHtml(unsafe) {
-    return unsafe.replace(/[&<>"']/g, m => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#039;' })[m]);
-  }
-</script>
+    // Load YouTube API
+    const s = document.createElement('script');
+    s.src = 'https://www.youtube.com/iframe_api';
+    document.head.appendChild(s);
+  </script>
 </body>
 </html>
