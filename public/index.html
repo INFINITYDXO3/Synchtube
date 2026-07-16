@@ -162,7 +162,7 @@ function onPlayerReady(event) {
 
   function applyState(data) {
     isRemoteSync = true;
-    if (data.videoId && data.videoId !== currentVideoId) {
+    if (data.videoId != null && data.videoId !== currentVideoId) {
       currentVideoId = data.videoId;
       player.loadVideoById({ videoId: data.videoId, startSeconds: data.currentTime || 0 });
       setStatus(`🎬 Now watching: ${data.videoId}`, '#2ecc71');
